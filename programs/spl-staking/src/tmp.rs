@@ -3,23 +3,32 @@ use anchor_spl::{
     associated_token::AssociatedToken,
     token::{Mint, Token, TokenAccount, transfer, Transfer},
 };
-declare_id!("3RfqbVcgDYvZ9JhVBZyfMpoocqiaLBVEAdb6wyANhRdx");
+declare_id!("Hob4uvwXPsgvCykQY2DBS3TV4WDtdAy4m9UVGT2DA9Y3");
 
 #[program]
-pub mod spl_staking {
+pub mod seafarers_spl_staking {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>, bump: u8) -> Result<()> {
         msg!("Instruction: Initialize");
 
+        msg!("before staking pool");
         let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
+        msg!("after staking pool");
         staking_pool.owner = ctx.accounts.owner.key();
+        msg!("Staking Pool Owner: {:?}", staking_pool.owner);
         staking_pool.staking_token_mint = ctx.accounts.stake_token_mint.key();
+        msg!("Staking Pool Mint: {:?}", staking_pool.staking_token_mint);
         staking_pool.total_staked_amount = 0;
+        msg!("Staking Pool Total Staked Amount: {:?}", staking_pool.total_staked_amount);
         staking_pool.total_reward_amount = 0;
-        // staking_pool.total_user_count = 0;
+        msg!("Staking Pool Total Reward Amount: {:?}", staking_pool.total_reward_amount);
+        staking_pool.total_user_count = 0;
+        msg!("Staking Pool Total User Count: {:?}", staking_pool.total_user_count);
         staking_pool.reward_per_second = 0;
+        msg!("Staking Pool Reward Per Second: {:?}", staking_pool.reward_per_second);
         staking_pool.bump = bump;
+        msg!("Staking Pool Bump: {:?}", staking_pool.bump);
 
         Ok(())
     }
@@ -66,16 +75,15 @@ pub mod spl_staking {
         )?;
 
         staking_pool.total_staked_amount += amount;
-
         //TODO: only update user count if it is a new unique user wallet
-        // staking_pool.total_user_count += 1;
+        staking_pool.total_user_count += 1;
 
-        staker_info.staked_amount += amount;
+        staker_info.amount += amount;
         staker_info.last_stake_timestamp = Clock::get().unwrap().unix_timestamp;
 
         msg!("Staking Pool Total Staked Amount: {:?}", staking_pool.total_staked_amount);
-        // msg!("Staking Pool Total User Count: {:?}", staking_pool.total_user_count);
-        msg!("Staker Info Amount: {:?}", staker_info.staked_amount);
+        msg!("Staking Pool Total User Count: {:?}", staking_pool.total_user_count);
+        msg!("Staker Info Amount: {:?}", staker_info.amount);
         msg!("Staker Info Last Stake Timestamp: {:?}", staker_info.last_stake_timestamp);
 
         Ok(())
@@ -87,16 +95,12 @@ pub mod spl_staking {
         let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
         let staker_info: &mut Account<'_, StakerInfo> = &mut ctx.accounts.staker_info;
 
-        //ensure that the user can only unstake the amount that they have staked
-        if staker_info.staked_amount < amount {
-            return Err(ErrorCode::InsufficientStake.into());
-        }
-
         let rewards_earned = Clock::get().unwrap().unix_timestamp - staker_info.last_stake_timestamp;
+        msg!("Rewards Earned: {:?}", rewards_earned);
         let total_amount = if rewards_earned > 0 {
             amount + rewards_earned as u64
         } else {
-            amount
+            amount // or handle negative rewards differently
         };
 
         msg!("Total Amount: {:?}", total_amount);
@@ -121,17 +125,17 @@ pub mod spl_staking {
 
         staking_pool.total_staked_amount -= amount;
         staking_pool.total_reward_amount -= rewards_earned as u64;
-        // if staker_info.staked_amount == amount {
-        //     staking_pool.total_user_count -= 1;
-        // }
+        if staker_info.amount == amount {
+            staking_pool.total_user_count -= 1;
+        }
 
-        staker_info.staked_amount -= amount;
+        staker_info.amount -= amount;
         staker_info.last_stake_timestamp = 0;
 
         msg!("Staking Pool Total Staked Amount: {:?}", staking_pool.total_staked_amount);
         msg!("Staking Pool Total Reward Amount: {:?}", staking_pool.total_reward_amount);
-        // msg!("Staking Pool Total User Count: {:?}", staking_pool.total_user_count);
-        msg!("Staker Info Amount: {:?}", staker_info.staked_amount);
+        msg!("Staking Pool Total User Count: {:?}", staking_pool.total_user_count);
+        msg!("Staker Info Amount: {:?}", staker_info.amount);
         msg!("Staker Info Last Stake Timestamp: {:?}", staker_info.last_stake_timestamp);
 
         Ok(())
@@ -286,68 +290,28 @@ pub struct Unstake<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
-
-
-// pub const MAX_STAKERS: usize = 2000;
-
-#[account]
-pub struct StakerInfo {
-    pub key: Pubkey,
-    pub staked_amount: u64,
-    pub earned_amount: u64,
-    pub last_stake_timestamp: i64,
-}
-
-impl Default for StakerInfo {
-    fn default() -> StakerInfo {
-        StakerInfo {
-            key: Pubkey::default(),
-            staked_amount: 0,
-            earned_amount: 0,
-            last_stake_timestamp: 0,
-        }
-    }
-}
-
 #[account]
 pub struct StakingPool {
     pub owner: Pubkey,
     pub staking_token_mint: Pubkey,
     pub total_staked_amount: u64,
     pub total_reward_amount: u64,
-    // pub total_user_count: u64,
+    pub total_user_count: u64,
     pub reward_per_second: u64,
-    pub bump: u8,
-    // pub users:[StakerInfo; MAX_STAKERS]
+    pub bump: u8
 }
 
-impl Default for StakingPool {
-    fn default() -> StakingPool {
-        StakingPool {
-            owner: Pubkey::default(),
-            staking_token_mint: Pubkey::default(),
-            total_staked_amount: 0,
-            total_reward_amount: 0,
-            // total_user_count: 0,
-            reward_per_second: 0,
-            bump: 0,
-            // users: [StakerInfo::default(); MAX_STAKERS],
-        }
-    }
-
+#[account]
+pub struct StakerInfo {
+    pub amount: u64,
+    pub last_stake_timestamp: i64,
 }
 
 
 impl StakerInfo {
-    pub const LEN: usize = std::mem::size_of::<StakerInfo>();
+    pub const LEN: usize = 8 + 8;
 }
 
 impl StakingPool {
-    pub const LEN: usize = std::mem::size_of::<StakingPool>();
-}
-
-#[error_code]
-pub enum ErrorCode {
-    #[msg("You may only unstake the amount that you have staked")]
-    InsufficientStake,
+    pub const LEN: usize = 32 + 32 + 8 + 8 + 8 + 8 + 1;
 }

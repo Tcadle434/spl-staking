@@ -1,7 +1,7 @@
 [toolchain]
 
 [features]
-seeds = false
+seeds = true
 skip-lint = false
 
 [programs.localnet]
@@ -11,7 +11,7 @@ spl_staking = "3RfqbVcgDYvZ9JhVBZyfMpoocqiaLBVEAdb6wyANhRdx"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "devnet"
 wallet = "/Users/thomascadle/.config/solana/id.json"
 
 [scripts]

@@ -11,7 +11,7 @@ pub mod spl_staking {
 
     /* 
     Initialize the staking pool. This is a PDA that will be used to store key information about the token 
-    being staked, the total amount of tokens staked, the total amount of rewards, and the reward rate.
+    being staked, the total amount of tokens staked, the total amount of rewards, and the reward rate, etc.
     */
     pub fn initialize(ctx: Context<Initialize>, bump: u8) -> Result<()> {
         msg!("Instruction: Initialize");

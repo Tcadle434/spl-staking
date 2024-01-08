@@ -310,7 +310,7 @@ pub struct Stake<'info> {
 
     #[account(
         init_if_needed, 
-        seeds=[b"stake", staker.key().as_ref(), staking_pool.owner.key().as_ref()], // TODO: NEEDS STAKING POOL KEY SEED TOO
+        seeds=[b"stake", staker.key().as_ref(), staking_pool.owner.key().as_ref()],
         bump,
         payer = staker, 
         space = 8 + StakerInfo::LEN)]

@@ -9,6 +9,10 @@ declare_id!("3RfqbVcgDYvZ9JhVBZyfMpoocqiaLBVEAdb6wyANhRdx");
 pub mod spl_staking {
     use super::*;
 
+    /* 
+    Initialize the staking pool. This is a PDA that will be used to store key information about the token 
+    being staked, the total amount of tokens staked, the total amount of rewards, and the reward rate.
+    */
     pub fn initialize(ctx: Context<Initialize>, bump: u8) -> Result<()> {
         msg!("Instruction: Initialize");
 
@@ -17,13 +21,17 @@ pub mod spl_staking {
         staking_pool.staking_token_mint = ctx.accounts.stake_token_mint.key();
         staking_pool.total_staked_amount = 0;
         staking_pool.total_reward_amount = 0;
-        // staking_pool.total_user_count = 0;
         staking_pool.reward_per_second = 0;
         staking_pool.bump = bump;
 
         Ok(())
     }
 
+    /*
+    Fund the staking pool. This will transfer the amount of tokens specified by the user to the staking pool.
+    total_reward_amount tracks the amount of funds added to the staking pool that are available to be distributed
+    as rewards.
+     */
     pub fn fund(ctx: Context<Fund>, amount: u64) -> Result<()> {
         msg!("Instruction: Fund");
 
@@ -41,14 +49,23 @@ pub mod spl_staking {
             amount,
         )?;
 
-        staking_pool.total_reward_amount += amount;
+        staking_pool.total_reward_amount = staking_pool.total_reward_amount.checked_add(amount).unwrap();
         msg!("Staking Pool Total Reward Amount: {:?}", staking_pool.total_reward_amount);
 
         Ok(())
     }
     
+    /*
+    Stake a user's tokens. This will transfer the amount of tokens specified by the user
+    from their wallet to the ATA of the token_vault. All user information and pool information
+    are updated accordingly.
+     */
     pub fn stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
         msg!("Instruction: Stake");
+
+        if amount <= 0 {
+            return Err(ErrorCode::ZeroStake.into());
+        }
 
         let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
         let staker_info: &mut Account<'_, StakerInfo> = &mut ctx.accounts.staker_info;
@@ -65,36 +82,60 @@ pub mod spl_staking {
             amount,
         )?;
 
-        staking_pool.total_staked_amount += amount;
+        staking_pool.total_staked_amount = staking_pool.total_staked_amount.checked_add(amount).unwrap();
+        staker_info.staked_amount = staker_info.staked_amount.checked_add(amount).unwrap();
 
-        //TODO: only update user count if it is a new unique user wallet
-        // staking_pool.total_user_count += 1;
+        let now: u64 = Clock::get().unwrap().unix_timestamp.try_into().unwrap();
 
-        staker_info.staked_amount += amount;
-        staker_info.last_stake_timestamp = Clock::get().unwrap().unix_timestamp;
+        // if there is not currently an active stake
+        if staker_info.last_stake_timestamp == 0 {
+            staker_info.earned_amount = 0;
+            staker_info.key = ctx.accounts.staker.key();
+        } else {
+            let staked_seconds = now.checked_sub(staker_info.last_stake_timestamp as u64).unwrap();
+            let rate: f64 = staked_seconds as f64 / staking_pool.total_staked_amount as f64;
+            let earned_amount: f64 = rate * staker_info.staked_amount as f64;
+    
+            staker_info.earned_amount = staker_info.earned_amount.checked_add(earned_amount as u64).unwrap();
+        }
+        
+        staker_info.last_stake_timestamp = now.try_into().unwrap();
 
         msg!("Staking Pool Total Staked Amount: {:?}", staking_pool.total_staked_amount);
-        // msg!("Staking Pool Total User Count: {:?}", staking_pool.total_user_count);
         msg!("Staker Info Amount: {:?}", staker_info.staked_amount);
         msg!("Staker Info Last Stake Timestamp: {:?}", staker_info.last_stake_timestamp);
 
         Ok(())
     }
 
+    /*
+    Unstake a user's tokens. This will transfer the amount of tokens specified by the user + all of the
+    accrued unclaimed token rewards from the staking pool vault ATA to the user's wallet. All user information
+    and pool information are updated or reset accordingly.
+     */
     pub fn unstake (ctx: Context<Unstake>, amount: u64) -> Result<()> {
         msg!("Instruction: Unstake");
 
         let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
         let staker_info: &mut Account<'_, StakerInfo> = &mut ctx.accounts.staker_info;
 
-        //ensure that the user can only unstake the amount that they have staked
+        if staker_info.staked_amount == 0 {
+            return Err(ErrorCode::NoStake.into());
+        }
+
         if staker_info.staked_amount < amount {
             return Err(ErrorCode::InsufficientStake.into());
         }
 
-        let rewards_earned = Clock::get().unwrap().unix_timestamp - staker_info.last_stake_timestamp;
-        let total_amount = if rewards_earned > 0 {
-            amount + rewards_earned as u64
+        let now: u64 = Clock::get().unwrap().unix_timestamp.try_into().unwrap();
+        let staked_seconds = now.checked_sub(staker_info.last_stake_timestamp as u64).unwrap();
+        let rate: f64 = staked_seconds as f64 / staking_pool.total_staked_amount as f64;
+        let earned_amount: f64 = rate * staker_info.staked_amount as f64;
+
+        staker_info.earned_amount = staker_info.earned_amount.checked_add(earned_amount as u64).unwrap();
+
+        let total_amount = if staker_info.earned_amount > 0 {
+            amount.checked_add(staker_info.earned_amount).unwrap()
         } else {
             amount
         };
@@ -119,20 +160,70 @@ pub mod spl_staking {
             total_amount,
         )?;
 
-        staking_pool.total_staked_amount -= amount;
-        staking_pool.total_reward_amount -= rewards_earned as u64;
-        // if staker_info.staked_amount == amount {
-        //     staking_pool.total_user_count -= 1;
-        // }
+        staking_pool.total_staked_amount = staking_pool.total_staked_amount.checked_sub(amount).unwrap();
+        staking_pool.total_reward_amount = staking_pool.total_reward_amount.checked_sub(staker_info.earned_amount).unwrap();
 
-        staker_info.staked_amount -= amount;
-        staker_info.last_stake_timestamp = 0;
+        //if a user unstakes the full amount, reset the last_stake_timestamp to 0
+        if staker_info.staked_amount == amount {
+            staker_info.last_stake_timestamp = 0;
+        } else {
+            staker_info.last_stake_timestamp = now.try_into().unwrap();
+        }
+
+        staker_info.staked_amount = staker_info.staked_amount.checked_sub(amount).unwrap();
+        staker_info.earned_amount = 0;
 
         msg!("Staking Pool Total Staked Amount: {:?}", staking_pool.total_staked_amount);
         msg!("Staking Pool Total Reward Amount: {:?}", staking_pool.total_reward_amount);
-        // msg!("Staking Pool Total User Count: {:?}", staking_pool.total_user_count);
         msg!("Staker Info Amount: {:?}", staker_info.staked_amount);
         msg!("Staker Info Last Stake Timestamp: {:?}", staker_info.last_stake_timestamp);
+
+        Ok(())
+    }
+
+    /*
+    Claim a user's vested stake rewards. This will send all the rewards tokens that the user has earned
+    to their wallet, but keep their staked tokens in the staking pool. All user information and pool information
+    are updated accordingly.
+    */
+    pub fn claim(ctx: Context<Claim>) -> Result<()> {
+        msg!("Instruction: Claim");
+
+        let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
+        let staker_info: &mut Account<'_, StakerInfo> = &mut ctx.accounts.staker_info;
+
+        let now: u64 = Clock::get().unwrap().unix_timestamp.try_into().unwrap();
+        let staked_seconds = now.checked_sub(staker_info.last_stake_timestamp as u64).unwrap();
+        let rate: f64 = staked_seconds as f64 / staking_pool.total_staked_amount as f64;
+        let earned_amount: f64 = rate * staker_info.staked_amount as f64;
+
+        staker_info.earned_amount = staker_info.earned_amount.checked_add(earned_amount as u64).unwrap();
+        staker_info.last_stake_timestamp = now.try_into().unwrap();
+
+        msg!("Staker Info Earned Amount: {:?}", staker_info.earned_amount);
+
+        let bump = staking_pool.bump;
+        let staking_pool_owner_key = staking_pool.owner.key();
+        let seeds = &[b"vault", staking_pool_owner_key.as_ref(), &[bump]];
+        let signer = &[&seeds[..]];
+
+        transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_ata.to_account_info(),
+                    to: ctx.accounts.staker_ata.to_account_info(),
+                    authority: ctx.accounts.token_vault.to_account_info(),
+                },
+                signer,
+            ),
+            staker_info.earned_amount,
+        )?;
+
+        staking_pool.total_reward_amount = staking_pool.total_reward_amount.checked_sub(staker_info.earned_amount).unwrap();
+        staker_info.earned_amount = 0;
+
+        msg!("Staking Pool Total Reward Amount: {:?}", staking_pool.total_reward_amount);
 
         Ok(())
     }
@@ -219,7 +310,7 @@ pub struct Stake<'info> {
 
     #[account(
         init_if_needed, 
-        seeds=[b"stake", staker.key().as_ref()], 
+        seeds=[b"stake", staker.key().as_ref(), staking_pool.owner.key().as_ref()], // TODO: NEEDS STAKING POOL KEY SEED TOO
         bump,
         payer = staker, 
         space = 8 + StakerInfo::LEN)]
@@ -286,7 +377,41 @@ pub struct Unstake<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
+#[derive(Accounts)]
+pub struct Claim<'info> {
+    #[account(mut)]
+    pub staker: Signer<'info>,
 
+    #[account(mut)]
+    pub staking_pool: Account<'info, StakingPool>,
+
+    #[account(mut)]
+    pub staker_info: Account<'info, StakerInfo>,
+
+    #[account(
+        seeds = [b"vault", staking_pool.owner.key().as_ref()],
+        bump = staking_pool.bump,
+    )]
+    pub token_vault: SystemAccount<'info>,
+
+    #[account(
+        mut,
+        associated_token::authority = staker,
+        associated_token::mint = staking_pool.staking_token_mint,
+    )]
+    pub staker_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::authority = token_vault,
+        associated_token::mint = staking_pool.staking_token_mint,
+    )]
+    pub vault_ata: Account<'info, TokenAccount>,
+
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+}
 
 // pub const MAX_STAKERS: usize = 2000;
 
@@ -350,4 +475,8 @@ impl StakingPool {
 pub enum ErrorCode {
     #[msg("You may only unstake the amount that you have staked")]
     InsufficientStake,
+    #[msg("You must stake more than 0 tokens")]
+    ZeroStake,
+    #[msg("You are not currently staking any tokens")]
+    NoStake,
 }

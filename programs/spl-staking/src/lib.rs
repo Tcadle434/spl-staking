@@ -13,7 +13,7 @@ pub mod spl_staking {
     Initialize the staking pool. This is a PDA that will be used to store key information about the token 
     being staked, the total amount of tokens staked, the total amount of rewards, and the reward rate, etc.
     */
-    pub fn initialize(ctx: Context<Initialize>, bump: u8) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         msg!("Instruction: Initialize");
 
         let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
@@ -22,7 +22,7 @@ pub mod spl_staking {
         staking_pool.total_staked_amount = 0;
         staking_pool.total_reward_amount = 0;
         staking_pool.reward_per_second = 0;
-        staking_pool.bump = bump;
+        staking_pool.bump =  ctx.bumps.staking_pool;
 
         Ok(())
     }
@@ -63,9 +63,7 @@ pub mod spl_staking {
     pub fn stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
         msg!("Instruction: Stake");
 
-        if amount <= 0 {
-            return Err(ErrorCode::ZeroStake.into());
-        }
+        require_gt!(amount, 0, ErrorCode::ZeroStake);
 
         let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
         let staker_info: &mut Account<'_, StakerInfo> = &mut ctx.accounts.staker_info;
@@ -91,6 +89,7 @@ pub mod spl_staking {
         if staker_info.last_stake_timestamp == 0 {
             staker_info.earned_amount = 0;
             staker_info.key = ctx.accounts.staker.key();
+            staker_info.staking_pool = staking_pool.key();
         } else {
             let staked_seconds = now.checked_sub(staker_info.last_stake_timestamp as u64).unwrap();
             let rate: f64 = staked_seconds as f64 / staking_pool.total_staked_amount as f64;
@@ -119,13 +118,8 @@ pub mod spl_staking {
         let staking_pool: &mut Account<'_, StakingPool> = &mut ctx.accounts.staking_pool;
         let staker_info: &mut Account<'_, StakerInfo> = &mut ctx.accounts.staker_info;
 
-        if staker_info.staked_amount == 0 {
-            return Err(ErrorCode::NoStake.into());
-        }
-
-        if staker_info.staked_amount < amount {
-            return Err(ErrorCode::InsufficientStake.into());
-        }
+        require_neq!(staker_info.staked_amount, 0, ErrorCode::NoStake);
+        require_gte!(staker_info.staked_amount, amount, ErrorCode::InsufficientStake);
 
         let now: u64 = Clock::get().unwrap().unix_timestamp.try_into().unwrap();
         let staked_seconds = now.checked_sub(staker_info.last_stake_timestamp as u64).unwrap();
@@ -230,7 +224,6 @@ pub mod spl_staking {
 }
 
 #[derive(Accounts)]
-#[instruction(bump: u8)]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
@@ -240,10 +233,10 @@ pub struct Initialize<'info> {
         seeds=[b"pool", owner.key().as_ref()], 
         bump,
         payer = owner,
-        space = StakingPool::LEN + 8)]
+        space = 8 + StakingPool::INIT_SPACE)]
     pub staking_pool: Account<'info, StakingPool>,
 
-    pub stake_token_mint: Box<Account<'info, Mint>>,
+    pub stake_token_mint: Account<'info, Mint>,
 
     #[account(
         seeds=[b"vault", owner.key().as_ref()],
@@ -257,7 +250,7 @@ pub struct Initialize<'info> {
         associated_token::authority = token_vault,
         associated_token::mint = stake_token_mint,
     )]
-    pub vault_ata: Box<Account<'info, TokenAccount>>,
+    pub vault_ata: Account<'info, TokenAccount>,
 
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
@@ -271,7 +264,7 @@ pub struct Fund<'info> {
     #[account(mut)]
     pub staking_pool: Account<'info, StakingPool>,
 
-    pub stake_token_mint: Box<Account<'info, Mint>>,
+    pub stake_token_mint: Account<'info, Mint>,
 
     #[account(
         seeds = [b"vault", staking_pool.owner.key().as_ref()],
@@ -313,8 +306,8 @@ pub struct Stake<'info> {
         seeds=[b"stake", staker.key().as_ref(), staking_pool.owner.key().as_ref()],
         bump,
         payer = staker, 
-        space = 8 + StakerInfo::LEN)]
-    pub staker_info: Box<Account<'info, StakerInfo>>,
+        space = 8 + StakerInfo::INIT_SPACE)]
+    pub staker_info: Account<'info, StakerInfo>,
 
     #[account(
         seeds = [b"vault", staking_pool.owner.key().as_ref()],
@@ -413,62 +406,28 @@ pub struct Claim<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
-// pub const MAX_STAKERS: usize = 2000;
 
 #[account]
+#[derive(InitSpace)]
+#[derive(Default)]
 pub struct StakerInfo {
     pub key: Pubkey,
     pub staked_amount: u64,
     pub earned_amount: u64,
     pub last_stake_timestamp: i64,
-}
-
-impl Default for StakerInfo {
-    fn default() -> StakerInfo {
-        StakerInfo {
-            key: Pubkey::default(),
-            staked_amount: 0,
-            earned_amount: 0,
-            last_stake_timestamp: 0,
-        }
-    }
+    pub staking_pool: Pubkey,
 }
 
 #[account]
+#[derive(InitSpace)]
+#[derive(Default)]
 pub struct StakingPool {
     pub owner: Pubkey,
     pub staking_token_mint: Pubkey,
     pub total_staked_amount: u64,
     pub total_reward_amount: u64,
-    // pub total_user_count: u64,
     pub reward_per_second: u64,
     pub bump: u8,
-    // pub users:[StakerInfo; MAX_STAKERS]
-}
-
-impl Default for StakingPool {
-    fn default() -> StakingPool {
-        StakingPool {
-            owner: Pubkey::default(),
-            staking_token_mint: Pubkey::default(),
-            total_staked_amount: 0,
-            total_reward_amount: 0,
-            // total_user_count: 0,
-            reward_per_second: 0,
-            bump: 0,
-            // users: [StakerInfo::default(); MAX_STAKERS],
-        }
-    }
-
-}
-
-
-impl StakerInfo {
-    pub const LEN: usize = std::mem::size_of::<StakerInfo>();
-}
-
-impl StakingPool {
-    pub const LEN: usize = std::mem::size_of::<StakingPool>();
 }
 
 #[error_code]
